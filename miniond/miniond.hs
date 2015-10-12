@@ -86,5 +86,4 @@ main = do
     Left _ -> putStrLn $ "ERROR: syntax error"
     Right val -> case runModule val of
                    Left err -> putStrLn err
-                   Right out -> do { x <- out;
-                                     putStrLn . T.unpack . T.strip . T.pack $ x }
+                   Right out -> out >>= putStrLn . T.unpack . T.strip . T.pack
