@@ -1,5 +1,6 @@
 module Main where
 
+import Control.Monad.IO.Class
 import Data.Text as T
 import qualified Text.ParserCombinators.Parsec as P
 import Text.Parsec ((<|>))
@@ -76,14 +77,12 @@ runModule Command {cmdModule=(ModuleName "tail"), cmdArgs=args} =
   Right $ readProcess "tail" [filepath] []
   where filepath=argumentToString $ args !! 0
 
-runModule _ = Left "ERROR: Invalid module name"
+runModule _ = Left "Invalid Module"
 
 main :: IO ()
 main = do
   input <- hGetLine stdin
-
-  case P.parse parseCommand "(command)" input of
-    Left _ -> putStrLn $ "ERROR: syntax error"
-    Right val -> case runModule val of
-                   Left err -> putStrLn err
-                   Right out -> out >>= putStrLn . T.unpack . T.strip . T.pack
+  either (\_ -> err "Syntax Error") run $ P.parse parseCommand "(command)" input
+  where run val = either err out $ runModule val
+        out s = s >>= putStrLn . T.unpack . T.strip . T.pack
+        err s = do putStrLn $ "ERROR: " ++ s
