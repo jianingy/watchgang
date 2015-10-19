@@ -1,0 +1,21 @@
+---
+monitor:
+  use: nginx
+  where:
+    timeout: 1200
+    frequency: 3
+    confirm: [2, 3] 
+    workers: 4
+
+notification:
+  -
+    states: [error, warning]
+    exec: ['echo X: {state} found on {host}']
+    start: 0
+    stop: 10
+  -
+    states: [error]
+    exec: ['echo {state}']
+    start: 10
+    stop: 20
+
