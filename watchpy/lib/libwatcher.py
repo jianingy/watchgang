@@ -130,15 +130,19 @@ class TCPQuerier(TornadoQuerierBase):
     def run_task(self, host):
         client = TCPClient()
         LOG.debug("connecting to `%s:%s'" % (host, self.port))
-        stream = yield client.connect(host, port=self.port)
-        LOG.debug("sending query `%s' to `%s:%s'" % (
-            self.content.encode('string-escape'), host, self.port))
-        yield stream.write(self.content)
-        ret = yield stream.read_until_close()
-        LOG.debug("`%s:%s' returns `%s'" % (host, self.port,
-                                            str(ret).encode('string-escape')))
-        stream.close()
-        self.returns[host] = ret
+        try:
+            stream = yield client.connect(host, port=self.port)
+            LOG.debug("sending query `%s' to `%s:%s'" % (
+                self.content.encode('string-escape'), host, self.port))
+            yield stream.write(self.content)
+            ret = yield stream.read_until_close()
+            LOG.debug("`%s:%s' returns `%s'" % (host, self.port,
+                                                str(ret).encode('string-escape')))
+            stream.close()
+            self.returns[host] = ret
+        except:
+            LOG.warn("`%s:%s' return status unknown" % (host, self.port))
+            self.returns[host] = None
 
     def get_result(self):
         return self.returns
@@ -172,6 +176,9 @@ class StateAnalyzer(object):
 
     def check_state_rule(self, val, rule):
         flags = re.MULTILINE
+
+        if val is None:
+            return False
 
         escaped_val = val.encode('string-escape')
         if 'when' in rule and re.search(rule['when'], val, flags):

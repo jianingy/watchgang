@@ -71,6 +71,8 @@ if __name__ == '__main__':
     config_file = path_join(root, 'conf', name + '.yaml')
     sleep_file = path_join(root, 'run', name + '.pause')
     d = WatcherDaemon(pid_file)
+    from tornado.options import parse_command_line
+    parse_command_line(sys.argv[1:])
 
     if action.lower() == 'run':
         if d.is_running():
