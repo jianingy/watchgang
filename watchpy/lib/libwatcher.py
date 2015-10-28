@@ -22,7 +22,7 @@ from datetime import datetime
 from tornado.gen import coroutine, Return
 from tornado.queues import Queue as TornadoQueue
 from tornado.tcpclient import TCPClient
-from os.path import join as path_join, basename, splitext
+from os.path import join as path_join, basename, splitext, exists
 from subprocess import call
 from yaml import load as yaml_load
 
@@ -224,9 +224,10 @@ class StateAnalyzer(object):
 
 class Watcher(object):
 
-    def __init__(self, filename, hosts):
-        self.name, _ = splitext(basename(filename))
-        with open(filename) as f:
+    def __init__(self, config_file, sleep_file, hosts):
+        self.name, _ = splitext(basename(config_file))
+        self.sleep_file = sleep_file
+        with open(config_file) as f:
             watcher_data = yaml_load(f)
 
         monitor_name = watcher_data['monitor']['use']
@@ -263,6 +264,8 @@ class Watcher(object):
 
     @coroutine
     def start_app(self):
+        if exists(self.sleep_file):
+            return
         yield self.app.start(self.workers)
         results = self.app.get_result()
         states_log = self.analyzer.analyze(results)
@@ -310,12 +313,10 @@ class Watcher(object):
         io_loop = tornado.ioloop.IOLoop.current()
         io_loop.run_sync(self.start_app)
 
-    def run(self):
+    def start(self):
         task = tornado.ioloop.PeriodicCallback(self.start_app,
                                                self.freq * 1000)
         task.start()
-        io_loop = tornado.ioloop.IOLoop.current()
-        io_loop.start()
 
 
 if __name__ == '__main__':
@@ -325,7 +326,7 @@ if __name__ == '__main__':
     enable_pretty_logging()
     parse_command_line()
 
-    wap = Watcher('conf/watchers/nginx.yaml',
-                  ['localhost',
-                   'localhost'])
-    wap.run()
+    # wap = Watcher('conf/watchers/nginx.yaml',
+    #               ['localhost',
+    #                'localhost'])
+    # wap.run()

@@ -1,0 +1,96 @@
+#!/usr/bin/env python
+from datetime import datetime
+from os.path import join as path_join, basename, splitext, exists
+from prettytable import PrettyTable
+from tornado.log import enable_pretty_logging
+from yaml import load as yaml_load
+
+import tornado.ioloop
+import logging
+import imp
+import os
+import sys
+
+
+LOG = logging.getLogger('tornado.application')
+
+root = os.path.dirname(os.path.abspath(__file__)) + '/..'
+daemon = imp.load_source('daemon', path_join(root, 'lib', 'daemon.py'))
+watcher = imp.load_source('watcher', path_join(root, 'lib', 'libwatcher.py'))
+
+
+class WatcherDaemon(daemon.Daemon):
+
+    def run(self, config_file, sleep_file):
+
+        with open(config_file) as f:
+            items = yaml_load(f)
+
+        for name, val in items.iteritems():
+            watcher_name = val['config']
+            query_range = [val['range']]
+            watcher_config = "%s.yaml" % path_join('conf/watchers',
+                                                   watcher_name)
+            instance = watcher.Watcher(watcher_config, sleep_file, query_range)
+            LOG.info('starting watcher %s %s' % (watcher_name, query_range))
+            instance.start()
+
+        io_loop = tornado.ioloop.IOLoop.current()
+        io_loop.start()
+
+
+def show_status():
+    from glob import glob
+    import psutil
+
+    def elapse(ts):
+        return datetime.now() - datetime.fromtimestamp(int(ts))
+
+    def is_running(name):
+        return not exists(path_join(root, 'run', n + '.pause'))
+    t = PrettyTable(['watcher', 'PID', 'uptime (secs)', 'running'])
+    ps = [(splitext(basename(x))[0], psutil.Process(int(file(x).read())))
+          for x in glob(path_join(root, 'run', '*.pid'))]
+
+    [t.add_row([n, str(p.pid), elapse(p.create_time()), is_running(n)])
+     for n, p in ps]
+    print t
+
+
+if __name__ == '__main__':
+    enable_pretty_logging()
+
+    action = basename(sys.argv[0])
+
+    if action.lower() == 'status':
+        show_status()
+        sys.exit(0)
+
+    name = sys.argv[1]
+    pid_file = path_join(root, 'run', name + '.pid')
+    config_file = path_join(root, 'conf', name + '.yaml')
+    sleep_file = path_join(root, 'run', name + '.pause')
+    d = WatcherDaemon(pid_file)
+
+    if action.lower() == 'run':
+        if d.is_running():
+            LOG.warn('watcher %s already started' % name)
+        else:
+            LOG.info('starting watcher %s' % name)
+            d.run(config_file, sleep_file)
+    elif action.lower() == 'start':
+        if d.is_running():
+            LOG.warn('watcher %s already started' % name)
+        else:
+            LOG.info('starting watcher %s' % name)
+            d.start(config_file, sleep_file)
+    elif action.lower() == 'stop':
+        if d.is_running():
+            LOG.info('stopping watcher %s' % name)
+            d.stop()
+        else:
+            LOG.warn('watcher %s is not running' % name)
+    elif action.lower() == 'sleep':
+        file(sleep_file, 'w+').write('')
+    elif action.lower() == 'awake':
+        os.remove(sleep_file)

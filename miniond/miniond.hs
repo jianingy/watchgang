@@ -77,6 +77,12 @@ runModule Command {cmdModule=(ModuleName "tail"), cmdArgs=args} =
   Right $ readProcess "tail" [filepath] []
   where filepath=argumentToString $ args !! 0
 
+runModule Command {cmdModule=(ModuleName "df"), cmdArgs=args} =
+  Right $ readProcess "df" [] []
+
+runModule Command {cmdModule=(ModuleName "dfi"), cmdArgs=args} =
+  Right $ readProcess "df" ["-i"] []
+
 runModule _ = Left "Invalid Module"
 
 main :: IO ()

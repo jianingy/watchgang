@@ -3,7 +3,7 @@ command:
   query: tcp 
   where:
     port: 80 
-    content: "GET / HTTP/1.0\r\nHost: www.daling.com\r\n\r\n"
+    content: "GET / HTTP/1.0\r\nHost: www.example.com\r\n\r\n"
 
 error:
   - when: 'potato is ok'

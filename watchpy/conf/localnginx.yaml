@@ -1,0 +1,7 @@
+local1:
+  config: nginx
+  range: 'localhost'
+
+local2:
+  config: nginx
+  range: 'hacktop'
