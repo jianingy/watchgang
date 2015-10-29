@@ -3,6 +3,8 @@ from datetime import datetime
 from os.path import join as path_join, basename, splitext, exists
 from prettytable import PrettyTable
 from tornado.log import enable_pretty_logging
+from tornado.options import parse_command_line
+from tornado.options import options as tornado_options
 from yaml import load as yaml_load
 
 import tornado.ioloop
@@ -66,13 +68,12 @@ if __name__ == '__main__':
         show_status()
         sys.exit(0)
 
-    name = sys.argv[1]
+    name = parse_command_line()[0]
     pid_file = path_join(root, 'run', name + '.pid')
     config_file = path_join(root, 'conf', name + '.yaml')
+    log_file = path_join(root, 'log', name + '.log')
     sleep_file = path_join(root, 'run', name + '.pause')
     d = WatcherDaemon(pid_file)
-    from tornado.options import parse_command_line
-    parse_command_line(sys.argv[1:])
 
     if action.lower() == 'run':
         if d.is_running():
@@ -84,7 +85,10 @@ if __name__ == '__main__':
         if d.is_running():
             LOG.warn('watcher %s already started' % name)
         else:
-            LOG.info('starting watcher %s' % name)
+            LOG.info('starting watcher %s (logging into %s)' %
+                     (name, log_file))
+            tornado_options.log_file_prefix = log_file
+            enable_pretty_logging()
             d.start(config_file, sleep_file)
     elif action.lower() == 'stop':
         if d.is_running():
