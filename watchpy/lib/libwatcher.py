@@ -17,6 +17,7 @@
 #
 # Author: Jianing Yang <jianingy.yang@gmail.com>
 #
+from ansible.inventory import Inventory
 from collections import deque, defaultdict
 from datetime import datetime
 from tornado.gen import coroutine, Return
@@ -25,16 +26,21 @@ from tornado.tcpclient import TCPClient
 from os.path import join as path_join, basename, splitext, exists
 from subprocess import call
 from yaml import load as yaml_load
-
+from guppy import hpy
 
 # from yaml.parser import ParserError as YAMLParserError
 # from yaml.scanner import ScannerError as YAMLScannerError
 
+import objgraph
 import logging
 import re
 import tornado.ioloop
+import time
 
 LOG = logging.getLogger('tornado.application')
+DEBUG_CONTENT_LENGTH = 20
+LAST_HEAP = None
+HEAP = hpy()
 
 
 class WError(Exception):
@@ -69,7 +75,8 @@ class UnsupportedQuerier(WError):
 
 class TornadoQuerierBase(object):
 
-    tasks = TornadoQueue()
+    def __init__(self):
+        self.tasks = TornadoQueue()
 
     def gen_task(self):
         raise NotImplementError()
@@ -84,30 +91,34 @@ class TornadoQuerierBase(object):
         self.running = False
 
     @coroutine
-    def run_worker(self, f):
-        while True:
+    def run_worker(self, worker_id, f):
+        while self.tasks.qsize() > 0:
             task = yield self.tasks.get()
+            LOG.debug('worker[%d]: current task is %s' % (worker_id, task))
             try:
                 yield f(task)
+                pass
             except Exception as e:
                 LOG.warning(str(e))
             finally:
                 self.tasks.task_done()
+                task = None
+        LOG.debug('worker[%d]: all tasks done %s' % (worker_id, self.tasks))
 
     @coroutine
     def start(self, num_workers=1):
 
         self.prepare()
 
-        # start shoot workers
-        for worker_id in range(num_workers):
-            LOG.debug('starting worker %d' % worker_id)
-            self.run_worker(self.run_task)
-
-        # feed targets
+        # add tasks
         tasks = yield self.gen_task()
         for task in tasks:
             yield self.tasks.put(task)
+
+        # start shoot workers
+        for worker_id in range(num_workers):
+            LOG.debug('starting worker %d' % worker_id)
+            self.run_worker(worker_id, self.run_task)
 
         yield self.tasks.join()
         self.cleanup()
@@ -136,16 +147,19 @@ class TCPQuerier(TornadoQuerierBase):
                 self.content.encode('string-escape'), host, self.port))
             yield stream.write(self.content)
             ret = yield stream.read_until_close()
-            LOG.debug("`%s:%s' returns `%s'" % (host, self.port,
-                                                str(ret).encode('string-escape')))
+            resp = str(ret).encode('string-escape')[:DEBUG_CONTENT_LENGTH]
+            LOG.debug("`%s:%s' returns `%s'" % (host, self.port, resp))
             stream.close()
+            del stream
             self.returns[host] = ret
         except:
             LOG.warn("`%s:%s' return status unknown" % (host, self.port))
             self.returns[host] = None
+        finally:
+            client = None
 
     def get_result(self):
-        return self.returns
+        return dict(self.returns)
 
 
 class StateAnalyzer(object):
@@ -183,12 +197,12 @@ class StateAnalyzer(object):
         escaped_val = val.encode('string-escape')
         if 'when' in rule and re.search(rule['when'], val, flags):
             LOG.debug("`%s' matched with when(`%s')" %
-                      (escaped_val, rule['when']))
+                      (escaped_val[:DEBUG_CONTENT_LENGTH], rule['when']))
             return True
 
         if 'unless' in rule and not re.search(rule['unless'], val, flags):
             LOG.debug("`%s' matched with unless(`%s')" %
-                      (escaped_val, rule['unless']))
+                      (escaped_val[:DEBUG_CONTENT_LENGTH], rule['unless']))
             return True
 
         """
@@ -258,24 +272,38 @@ class Watcher(object):
         with open(monitor_config) as f:
             command_data = yaml_load(f)['command']
 
-        if command_data['query'] == 'tcp':
-            self.app = TCPQuerier(hosts,
-                                  command_data['where']['port'],
-                                  command_data['where']['content'],
-                                  monitor_data['where']['timeout'])
-        else:
-            raise UnsupportedQuerier(command_data['query'])
-
-        self.analyzer = StateAnalyzer(monitor_config)
+        self.command_data = command_data
+        self.monitor_data = monitor_data
+        self.monitor_config = monitor_config
+        self.hosts = hosts
         self.workers = int(monitor_data['where']['workers'])
 
     @coroutine
     def start_app(self):
         if exists(self.sleep_file):
             return
-        yield self.app.start(self.workers)
-        results = self.app.get_result()
-        states_log = self.analyzer.analyze(results)
+
+        command_data = self.command_data
+        monitor_data = self.monitor_data
+        monitor_config = self.monitor_config
+        
+        if command_data['query'] == 'tcp':
+            app = TCPQuerier(self.hosts,
+                             command_data['where']['port'],
+                             command_data['where']['content'],
+                             monitor_data['where']['timeout'])
+        else:
+            raise UnsupportedQuerier(command_data['query'])
+
+        analyzer = StateAnalyzer(monitor_config)
+
+        yield app.start(self.workers)
+
+        results = app.get_result()
+        states_log = analyzer.analyze(results)
+
+        app = None
+        analyzer = None
 
         for item in states_log:
             host, states, started_at = item
@@ -286,6 +314,8 @@ class Watcher(object):
         [self.check_fire_state(event, detail)
          for event, detail in self.moving_states.iteritems()]
 
+        # self.memory_profile()
+
     def check_fire_state(self, event, detail):
         count = len(filter(lambda x: x[0], detail))
         state, host = event.split('@', 1)
@@ -295,21 +325,29 @@ class Watcher(object):
             return
 
         if event not in self.events:
-            self.events[event] = datetime.now()
+            self.events[event] = dict(started_at=datetime.now())
 
-        elapsed = (datetime.now() - self.events[event]).total_seconds()
-
+        started_at = self.events[event]['started_at']
+        event_elapsed = round((datetime.now() - started_at).total_seconds())
+        LOG.debug('event elapsed = %s' % int(event_elapsed))
         for rule in self.rules:
             if state not in rule['states']:
                 continue
-            if elapsed < int(rule['start']):
+            if event_elapsed <= int(rule['start']):
                 continue
-            if elapsed >= int(rule.get('stop', 86400)):
+            if event_elapsed > int(rule.get('stop', 86400)):
                 continue
-            LOG.info("fire event: %s (count=%d) with `%s'"
-                     % (event, count, rule['exec']))
-            [self.fire_event(c, state=state, host=host)
-             for c in rule['exec']]
+            fired_at = self.events[event].get('fired_at',
+                                              datetime.fromtimestamp(0))
+            fired_elapsed = round((datetime.now() - fired_at).total_seconds())
+            if fired_elapsed < int(rule['frequency']):
+                continue
+            LOG.info("fire event: %s (count=%d) with `%s'. "
+                     "event_elapsed=%s, fired_elapsed=%s"
+                     % (event, count, rule['exec'],
+                        event_elapsed, fired_elapsed))
+            [self.fire_event(c, state=state, host=host) for c in rule['exec']]
+            self.events[event]['fired_at'] = datetime.now()
 
     def fire_event(self, command, **kwargs):
         command = command.format(**kwargs)
@@ -319,6 +357,22 @@ class Watcher(object):
     def run_once(self):
         io_loop = tornado.ioloop.IOLoop.current()
         io_loop.run_sync(self.start_app)
+
+    def memory_profile(self):
+        global LAST_HEAP
+        print "{:=^78}".format(' profile begin')
+        import gc
+        gc.collect()
+        print "{:-^78}".format(' growth')
+        print objgraph.show_growth(limit=5)
+        print "{:-^78}".format(' common types')
+        print objgraph.show_most_common_types(limit=5)
+        if LAST_HEAP:
+            leftover = HEAP.heap() - LAST_HEAP
+            print leftover.byrcs[0].byid
+        LAST_HEAP = HEAP.heap()
+
+        print "{:=^78}".format(' profile end')
 
     def start(self):
         task = tornado.ioloop.PeriodicCallback(self.start_app,

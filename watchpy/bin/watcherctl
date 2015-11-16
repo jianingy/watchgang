@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/virtualenvs/tools/bin/python
+from ansible.inventory import Inventory
 from datetime import datetime
 from os.path import join as path_join, basename, splitext, exists
 from prettytable import PrettyTable
@@ -30,7 +31,16 @@ class WatcherDaemon(daemon.Daemon):
 
         for name, val in items.iteritems():
             watcher_name = val['config']
-            query_range = [val['range']]
+            query_range = []
+            inventory = Inventory()
+            for expr in val['range']:
+                if expr.startswith('@'):
+                    group = inventory.get_group(expr[1:])
+                    hosts = [h.name for h in group.get_hosts()]
+                    query_range.extend(hosts)
+                else:
+                    query_range.append(expr)
+            LOG.debug('query_range = %s' % query_range)
             watcher_config = "%s.yaml" % path_join('conf/watchers',
                                                    watcher_name)
             instance = watcher.Watcher(watcher_config, sleep_file, query_range)
@@ -79,7 +89,7 @@ if __name__ == '__main__':
         if d.is_running():
             LOG.warn('watcher %s already started' % name)
         else:
-            LOG.info('starting watcher %s' % name)
+            LOG.info('starting watcher %s(%s)' % (name, os.getpid()))
             d.run(config_file, sleep_file)
     elif action.lower() == 'start':
         if d.is_running():
